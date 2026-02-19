@@ -1,0 +1,5 @@
+node_modules/
+survey.db
+survey.db-shm
+survey.db-wal
+.env

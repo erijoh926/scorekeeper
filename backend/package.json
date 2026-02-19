@@ -1,0 +1,18 @@
+{
+  "name": "survey-backend",
+  "version": "1.0.0",
+  "description": "Survey API with SQLite",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "sql.js": "^1.12.0",
+    "cors": "^2.8.5",
+    "express": "^4.18.3"
+  }
+}
