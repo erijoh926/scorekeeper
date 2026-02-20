@@ -3,6 +3,7 @@ const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const initSqlJs = require("sql.js");
+const bcrypt = require("bcrypt");
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -16,11 +17,13 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// ── ADMIN ─────────────────────────────────────────────────────────────────────
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin123";
+// ── AUTH ──────────────────────────────────────────────────────────────────────
+// Store valid session tokens (in production, use Redis or similar)
+const activeSessions = new Set();
 
 function requireAdmin(req, res, next) {
-  if (req.headers["authorization"] === `Bearer ${ADMIN_PASSWORD}`) return next();
+  const token = req.headers["authorization"]?.replace("Bearer ", "");
+  if (token && activeSessions.has(token)) return next();
   res.status(401).json({ error: "Unauthorized" });
 }
 
@@ -89,8 +92,23 @@ async function start() {
       question_id INTEGER NOT NULL,
       value       TEXT
     );
+    CREATE TABLE IF NOT EXISTS admin (
+      id            INTEGER PRIMARY KEY CHECK (id = 1),
+      password_hash TEXT NOT NULL
+    );
   `);
   saveDb();
+
+  // Initialize admin password if not exists
+  const adminExists = get("SELECT id FROM admin WHERE id = 1");
+  if (!adminExists) {
+    // Get password from env or use default (you should change this!)
+    const defaultPassword = process.env.ADMIN_PASSWORD || "admin123";
+    const hash = await bcrypt.hash(defaultPassword, 10);
+    db.run("INSERT INTO admin (id, password_hash) VALUES (1, ?)", [hash]);
+    saveDb();
+    console.log("⚠️  Admin password initialized. Change ADMIN_PASSWORD env var in production!");
+  }
 
   // Seed default questions if empty
   const count = get("SELECT COUNT(*) as n FROM questions");
@@ -110,9 +128,36 @@ async function start() {
 
   app.get("/health", (req, res) => res.json({ ok: true }));
 
+  // Admin login
+  app.post("/api/admin/login", async (req, res) => {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: "Password required" });
+
+    const admin = get("SELECT password_hash FROM admin WHERE id = 1");
+    if (!admin) return res.status(500).json({ error: "Admin not configured" });
+
+    const valid = await bcrypt.compare(password, admin.password_hash);
+    if (!valid) return res.status(401).json({ error: "Invalid password" });
+
+    // Generate session token (in production, use crypto.randomBytes or JWT)
+    const token = Date.now().toString(36) + Math.random().toString(36).substr(2);
+    activeSessions.add(token);
+
+    // Auto-expire after 24 hours
+    setTimeout(() => activeSessions.delete(token), 24 * 60 * 60 * 1000);
+
+    res.json({ token });
+  });
+
   // Questions — public read
   app.get("/api/questions", (req, res) => {
     res.json(all("SELECT id, text, position FROM questions ORDER BY position ASC"));
+  });
+
+  // Leaderboard — public read (top 5)
+  app.get("/api/leaderboard", (req, res) => {
+    const top5 = all("SELECT name, score FROM responses ORDER BY score DESC LIMIT 5");
+    res.json(top5);
   });
 
   // Questions — admin write
@@ -172,6 +217,13 @@ async function start() {
     }
 
     res.json(responses.map(r => ({ ...r, answers: answerMap[r.id] || {} })));
+  });
+
+  // Responses — admin delete
+  app.delete("/api/responses/:id", requireAdmin, (req, res) => {
+    run("DELETE FROM answers WHERE response_id = ?", [req.params.id]);
+    run("DELETE FROM responses WHERE id = ?", [req.params.id]);
+    res.json({ ok: true });
   });
 
   // Analytics — admin read
